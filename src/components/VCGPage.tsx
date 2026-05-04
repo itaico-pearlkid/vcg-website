@@ -13,6 +13,9 @@ export default function VCGPage() {
   const [scannerOpen, setScannerOpen] = useState(false);
   const [bnwOpen, setBnwOpen] = useState(false);
   const [zineSubmitted, setZineSubmitted] = useState(false);
+  const [finderOpen, setFinderOpen] = useState(false);
+  const [finderFolder, setFinderFolder] = useState<string | null>(null);
+  const [snakeRunning, setSnakeRunning] = useState(false);
   const [briefSubmitted, setBriefSubmitted] = useState(false);
   const [inquireSubmitted, setInquireSubmitted] = useState(false);
   const [scanStep, setScanStep] = useState(1);
@@ -81,6 +84,7 @@ export default function VCGPage() {
         else if (i > idx) { x = 110; }
         else {
           if (local <= BUILD) { x = 0; }
+          else if (i === panels.length - 1) { x = 0; } // last panel stays — no blank white exit
           else {
             const s = (local - BUILD) / (1 - BUILD);
             x = -110 * ease(s);
@@ -198,10 +202,433 @@ export default function VCGPage() {
     window.scrollTo({ top, behavior: 'smooth' });
   }, []);
 
+  // ===== OS DESKTOP MODE =====
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+
+    const SECTION_IDS = ['hero','belief','theory','paths','path-x','path-y','path-z','work','proof','book','zine','atelier'];
+    const SECTION_TITLES: Record<string, string> = {
+      'hero':'INTRO_WINDOW_001.VCG','belief':'Three_Levers_of_Belief',
+      'theory':'Theory_of_Designed_Relativity.calc','paths':'Pick_Your_Path',
+      'path-x':'Path_X · Early_Stage','path-y':'Path_Y · Mid_Stage',
+      'path-z':'Path_Z · Late_Stage_+_Public','work':'Our_Work',
+      'proof':'Proof · What_Founders_Say','book':'VCG_Press · Brand_New_World',
+      'zine':'Brand_New_World_Monthly','atelier':'VCG_Atelier',
+    };
+    const LIGHT_SECTIONS = new Set(['paths','path-y','work','book','atelier']);
+
+    const cards = SECTION_IDS.map(id => document.getElementById(id)).filter(Boolean) as HTMLElement[];
+    const iconByTarget: Record<string, HTMLElement> = {};
+    document.querySelectorAll<HTMLElement>('#desktop-icons .di').forEach(b => {
+      const t = b.getAttribute('data-target');
+      if (t) iconByTarget[t] = b;
+    });
+
+    const body = document.body;
+    let openingId: string | null = null;
+    let chimePlayed = false;
+    let topZ = 200;
+    let cascadeStep = 0;
+    const openWindows: Record<string, { el: HTMLElement; savedRect?: DOMRect }> = {};
+
+    // ---- Audio chime ----
+    let audioCtx: AudioContext | null = null;
+    function ensureAudio() {
+      if (audioCtx) return audioCtx;
+      try { audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)(); } catch {}
+      return audioCtx;
+    }
+    ['pointerdown','keydown','wheel','scroll','touchstart'].forEach(ev => {
+      window.addEventListener(ev, function once() {
+        const c = ensureAudio();
+        if (c && c.state === 'suspended') c.resume();
+        window.removeEventListener(ev, once);
+      }, { once: true, passive: true });
+    });
+    function playChime() {
+      const ctx = ensureAudio();
+      if (!ctx) return;
+      if (ctx.state === 'suspended') ctx.resume();
+      const now = ctx.currentTime + 0.05;
+      const notes = [174.61, 220.00, 261.63, 349.23, 523.25];
+      const master = ctx.createGain();
+      master.gain.setValueAtTime(0, now);
+      master.gain.linearRampToValueAtTime(0.18, now + 0.04);
+      master.gain.linearRampToValueAtTime(0.16, now + 0.4);
+      master.gain.exponentialRampToValueAtTime(0.001, now + 2.6);
+      master.connect(ctx.destination);
+      notes.forEach((freq, i) => {
+        const osc = ctx.createOscillator();
+        const g = ctx.createGain();
+        osc.type = i === 0 ? 'triangle' : 'sine';
+        osc.frequency.value = freq;
+        g.gain.setValueAtTime(0, now);
+        g.gain.linearRampToValueAtTime(0.4 / (i + 1.4), now + 0.06);
+        g.gain.exponentialRampToValueAtTime(0.001, now + 2.5);
+        osc.connect(g).connect(master);
+        osc.start(now);
+        osc.stop(now + 2.6);
+      });
+    }
+
+    // ---- OS mode state ----
+    function isOSMode() { return body.classList.contains('os-mode'); }
+    function enterOSMode() {
+      if (isOSMode()) return;
+      body.classList.add('os-mode');
+      try { sessionStorage.setItem('vcg_os_mode', '1'); } catch {}
+      window.scrollTo(0, 0);
+    }
+    function exitOSMode() {
+      body.classList.remove('os-mode', 'os-on', 'full-desktop');
+      try { sessionStorage.removeItem('vcg_os_mode'); } catch {}
+      Object.keys(openWindows).forEach(closeWindow);
+      chimePlayed = false;
+      window.scrollTo(0, 0);
+    }
+
+    // ---- Window manager helpers ----
+    function bringToFront(el: HTMLElement) { topZ += 1; el.style.zIndex = String(topZ); }
+
+    function makeWindowDraggable(w: HTMLElement, handle: HTMLElement) {
+      let drag: { sx: number; sy: number; ox: number; oy: number } | null = null;
+      handle.addEventListener('mousedown', e => {
+        if ((e as MouseEvent).button !== 0) return;
+        if ((e.target as HTMLElement).closest('.vw-dot')) return;
+        const r = w.getBoundingClientRect();
+        drag = { sx: (e as MouseEvent).clientX, sy: (e as MouseEvent).clientY, ox: r.left, oy: r.top };
+        w.classList.add('dragging');
+        bringToFront(w);
+        const onMove = (ev: MouseEvent) => {
+          if (!drag) return;
+          w.style.left = (drag.ox + ev.clientX - drag.sx) + 'px';
+          w.style.top  = Math.max(28, drag.oy + ev.clientY - drag.sy) + 'px';
+        };
+        const onUp = () => {
+          drag = null;
+          w.classList.remove('dragging');
+          document.removeEventListener('mousemove', onMove);
+          document.removeEventListener('mouseup', onUp);
+        };
+        document.addEventListener('mousemove', onMove);
+        document.addEventListener('mouseup', onUp);
+        e.preventDefault();
+      });
+    }
+
+    function makeWindowResizable(w: HTMLElement, handle: HTMLElement) {
+      let res: { sx: number; sy: number; ow: number; oh: number } | null = null;
+      handle.addEventListener('mousedown', e => {
+        if ((e as MouseEvent).button !== 0) return;
+        const r = w.getBoundingClientRect();
+        res = { sx: (e as MouseEvent).clientX, sy: (e as MouseEvent).clientY, ow: r.width, oh: r.height };
+        w.classList.add('resizing');
+        const onMove = (ev: MouseEvent) => {
+          if (!res) return;
+          w.style.width  = Math.max(280, res.ow + ev.clientX - res.sx) + 'px';
+          w.style.height = Math.max(200, res.oh + ev.clientY - res.sy) + 'px';
+        };
+        const onUp = () => {
+          res = null;
+          w.classList.remove('resizing');
+          document.removeEventListener('mousemove', onMove);
+          document.removeEventListener('mouseup', onUp);
+        };
+        document.addEventListener('mousemove', onMove);
+        document.addEventListener('mouseup', onUp);
+        (e as MouseEvent).preventDefault();
+        (e as MouseEvent).stopPropagation();
+      });
+    }
+
+    function closeWindow(id: string) {
+      const entry = openWindows[id];
+      if (!entry) return;
+      entry.el.remove();
+      delete openWindows[id];
+    }
+
+    function minimizeWindow(id: string) {
+      const entry = openWindows[id];
+      if (!entry) return;
+      const icon = iconByTarget[id];
+      if (icon) {
+        const ir = icon.getBoundingClientRect();
+        const wr = entry.el.getBoundingClientRect();
+        entry.el.style.setProperty('--mx', (ir.left + ir.width/2 - wr.left - wr.width/2) + 'px');
+        entry.el.style.setProperty('--my', (ir.top + ir.height/2 - wr.top - wr.height/2) + 'px');
+      }
+      entry.el.classList.add('minimized');
+    }
+
+    function zoomWindow(id: string) {
+      const entry = openWindows[id];
+      if (!entry) return;
+      const w = entry.el;
+      if (w.dataset.zoomed === '1') {
+        const s = entry.savedRect;
+        if (s) { w.style.left = s.left + 'px'; w.style.top = s.top + 'px'; w.style.width = s.width + 'px'; w.style.height = s.height + 'px'; }
+        w.dataset.zoomed = '0';
+      } else {
+        entry.savedRect = w.getBoundingClientRect();
+        w.style.left = '20px'; w.style.top = '40px';
+        w.style.width = (window.innerWidth - 40) + 'px';
+        w.style.height = (window.innerHeight - 60) + 'px';
+        w.dataset.zoomed = '1';
+      }
+    }
+
+    function openSectionWindow(id: string) {
+      if (openWindows[id]) {
+        openWindows[id].el.classList.remove('minimized');
+        bringToFront(openWindows[id].el);
+        return;
+      }
+      const src = document.getElementById(id);
+      if (!src) return;
+      const cbody = src.querySelector('.cbody');
+      const bodyHtml = cbody ? cbody.outerHTML : src.innerHTML;
+      const isLt = LIGHT_SECTIONS.has(id);
+      const ttl = SECTION_TITLES[id] || id;
+
+      const w = document.createElement('div');
+      w.className = 'vw' + (isLt ? ' lt' : '');
+      w.dataset.windowId = id;
+      cascadeStep = (cascadeStep + 1) % 6;
+      const W = Math.min(window.innerWidth - 80, 880);
+      const H = Math.min(window.innerHeight - 120, 640);
+      const left = 60 + cascadeStep * 28;
+      const top  = 80 + cascadeStep * 28;
+      w.style.cssText = `left:${left}px;top:${top}px;width:${W}px;height:${H}px;`;
+
+      const icon = iconByTarget[id];
+      if (icon) {
+        const ir = icon.getBoundingClientRect();
+        w.style.setProperty('--ox', (ir.left + ir.width/2 - left - W/2) + 'px');
+        w.style.setProperty('--oy', (ir.top + ir.height/2 - top - H/2) + 'px');
+        w.classList.add('opening');
+      }
+
+      w.innerHTML =
+        `<div class="vw-tbar">
+          <div class="vw-dots">
+            <button class="vw-dot vw-close" type="button" aria-label="Close">×</button>
+            <button class="vw-dot vw-min" type="button" aria-label="Minimize">−</button>
+            <button class="vw-dot vw-zoom" type="button" aria-label="Zoom">↗</button>
+          </div>
+          <div class="vw-ttl">${ttl}</div>
+        </div>
+        <div class="vw-body">${bodyHtml}</div>
+        <div class="vw-resize" aria-hidden="true"></div>`;
+
+      document.body.appendChild(w);
+      bringToFront(w);
+      openWindows[id] = { el: w };
+
+      if (w.classList.contains('opening')) {
+        void w.offsetHeight;
+        requestAnimationFrame(() => requestAnimationFrame(() => w.classList.remove('opening')));
+      }
+
+      w.addEventListener('mousedown', () => bringToFront(w), true);
+      w.querySelector('.vw-close')!.addEventListener('click', e => { e.stopPropagation(); closeWindow(id); });
+      w.querySelector('.vw-min')!.addEventListener('click', e => { e.stopPropagation(); minimizeWindow(id); });
+      w.querySelector('.vw-zoom')!.addEventListener('click', e => { e.stopPropagation(); zoomWindow(id); });
+      makeWindowDraggable(w, w.querySelector('.vw-tbar') as HTMLElement);
+      makeWindowResizable(w, w.querySelector('.vw-resize') as HTMLElement);
+    }
+
+    // ---- Phase 2: scroll-genie ----
+    function ease(t: number) { return t < 0.5 ? 4*t*t*t : 1 - Math.pow(-2*t+2, 3)/2; }
+
+    function updateScroll() {
+      const vh = window.innerHeight;
+      let anyMinimized = false;
+      let lastFullyMinimized = true;
+
+      cards.forEach(card => {
+        const id = card.id;
+        const naturalTop = card.offsetTop - window.scrollY;
+        const naturalHeight = card.offsetHeight;
+        const naturalBottom = naturalTop + naturalHeight;
+        const icon = iconByTarget[id];
+
+        const startB = vh * 0.95;
+        const endB   = -vh * 0.10;
+        let raw: number;
+        if (naturalBottom >= startB) raw = 0;
+        else if (naturalBottom <= endB) raw = 1;
+        else raw = (startB - naturalBottom) / (startB - endB);
+        if (id === openingId) raw = 0;
+        const p = ease(raw);
+
+        let dx = 0, dy = 0;
+        if (icon) {
+          const ir = icon.getBoundingClientRect();
+          dx = (ir.left + ir.width/2) - (card.offsetLeft + naturalHeight/2 + card.offsetWidth/2 - naturalHeight/2);
+          // use natural positions directly
+          const cardCX = card.offsetLeft + card.offsetWidth / 2;
+          const cardCY = naturalTop + naturalHeight / 2;
+          dx = (ir.left + ir.width/2) - cardCX;
+          dy = (ir.top + ir.height/2) - cardCY;
+        }
+
+        if (p > 0) {
+          card.style.transform = `translate(${dx*p}px, ${dy*p}px) scale(${1 - p * 0.94})`;
+          card.style.opacity = String(1 - p);
+          card.style.filter = `blur(${p * 1.4}px)`;
+          card.classList.add('minimized');
+          anyMinimized = true;
+        } else {
+          card.style.transform = '';
+          card.style.opacity = '';
+          card.style.filter = '';
+          card.classList.remove('minimized');
+        }
+
+        if (icon) icon.classList.toggle('shown', p >= 0.55);
+        if (p < 0.99) lastFullyMinimized = false;
+      });
+
+      body.classList.toggle('os-on', anyMinimized);
+      const wasFullDesktop = body.classList.contains('full-desktop');
+      const isFullDesktop = cards.length > 0 && cards[cards.length-1].classList.contains('minimized') && lastFullyMinimized;
+      body.classList.toggle('full-desktop', isFullDesktop);
+      if (!wasFullDesktop && isFullDesktop && !chimePlayed) {
+        chimePlayed = true;
+        try { playChime(); } catch {}
+      }
+      if (isFullDesktop && !isOSMode()) enterOSMode();
+    }
+
+    // ---- Exit on scroll up ----
+    function exitOnUp(deltaY: number) {
+      if (!isOSMode()) return;
+      if (deltaY < 0) {
+        exitOSMode();
+        const maxY = document.documentElement.scrollHeight - window.innerHeight;
+        window.scrollTo(0, Math.max(0, maxY - 4));
+      }
+    }
+
+    // ---- OS mode icon click capture ----
+    const desktopIcons = document.getElementById('desktop-icons');
+    function onIconClickCapture(e: Event) {
+      const btn = (e.target as HTMLElement).closest<HTMLElement>('.di[data-target]');
+      if (!btn || !isOSMode()) return;
+      e.stopImmediatePropagation();
+      const id = btn.getAttribute('data-target')!;
+      openSectionWindow(id);
+    }
+
+    // ---- Reload button ----
+    function onReloadClick(e: Event) {
+      const act = (e.target as HTMLElement).closest('[data-act="reload-website"]');
+      if (!act) return;
+      e.preventDefault();
+      exitOSMode();
+      window.location.href = window.location.pathname + '?v=' + Date.now();
+    }
+
+    // ---- Card tdot click (minimize individual card) ----
+    function onTdotClick(e: Event) {
+      const dot = (e.target as HTMLElement).closest<HTMLElement>('.card .tdot');
+      if (!dot) return;
+      const label = (dot.getAttribute('aria-label') || dot.textContent || '').toLowerCase();
+      if (!(label.includes('close') || label.includes('minim') || dot.textContent === '×' || dot.textContent === '−')) return;
+      const card = dot.closest<HTMLElement>('.card');
+      if (!card) return;
+      const icon = iconByTarget[card.id];
+      if (icon) {
+        const ir = icon.getBoundingClientRect();
+        const cr = card.getBoundingClientRect();
+        card.style.setProperty('--gx', (ir.left + ir.width/2 - cr.left - cr.width/2) + 'px');
+        card.style.setProperty('--gy', (ir.top + ir.height/2 - cr.top - cr.height/2) + 'px');
+      }
+      card.classList.add('minimized');
+      if (icon) setTimeout(() => icon.classList.add('shown'), 380);
+      body.classList.add('os-on');
+    }
+
+    // ---- Event wiring ----
+    let rafId = 0;
+    function onScroll() { if (!rafId) rafId = requestAnimationFrame(() => { rafId = 0; updateScroll(); }); }
+    window.addEventListener('scroll', onScroll, { passive: true });
+    window.addEventListener('resize', onScroll);
+    window.addEventListener('wheel', (e: WheelEvent) => exitOnUp(e.deltaY), { passive: true });
+    window.addEventListener('keydown', (e: KeyboardEvent) => {
+      if (isOSMode() && (e.key === 'ArrowUp' || e.key === 'PageUp' || e.key === 'Home')) exitOnUp(-1);
+    });
+    let touchStartY: number | null = null;
+    window.addEventListener('touchstart', (e: TouchEvent) => { touchStartY = e.touches[0]?.clientY ?? null; }, { passive: true });
+    window.addEventListener('touchmove', (e: TouchEvent) => {
+      if (touchStartY == null || !isOSMode()) return;
+      if ((e.touches[0]?.clientY ?? 0) - touchStartY > 30) { exitOnUp(-1); touchStartY = null; }
+    }, { passive: true });
+    desktopIcons?.addEventListener('click', onIconClickCapture, true);
+    document.addEventListener('click', onReloadClick);
+    document.addEventListener('click', onTdotClick);
+
+    // Restore session OS mode
+    try { if (sessionStorage.getItem('vcg_os_mode') === '1') body.classList.add('os-mode','os-on','full-desktop'); } catch {}
+
+    requestAnimationFrame(updateScroll);
+
+    return () => {
+      window.removeEventListener('scroll', onScroll);
+      window.removeEventListener('resize', onScroll);
+      desktopIcons?.removeEventListener('click', onIconClickCapture, true);
+      document.removeEventListener('click', onReloadClick);
+      document.removeEventListener('click', onTdotClick);
+      Object.keys(openWindows).forEach(closeWindow);
+    };
+  }, []);
+
   function openBrief(path: BriefPath) {
     setBriefPath(path);
     setBriefSubmitted(false);
     setBriefOpen(true);
+  }
+
+  function openFinder(folder: string) {
+    setFinderFolder(folder);
+    setFinderOpen(true);
+  }
+
+  function runSnake() {
+    if (snakeRunning) return;
+    setSnakeRunning(true);
+    const stage = document.createElement('div');
+    stage.className = 'snake-stage';
+    document.body.appendChild(stage);
+    const N = 80, spawnMs = 28, holdMs = 800, fadeMs = 800;
+    const vw = window.innerWidth, vh = window.innerHeight, margin = 80;
+    const words = ['belief','vcg','brand','new','world','path','x','y','z','scale','build'];
+    function pointOnSnake(t: number) {
+      return {
+        x: margin + (vw - 2*margin) * (0.5 + 0.42 * Math.sin(t * Math.PI * 3)),
+        y: margin + (vh - 2*margin) * t,
+      };
+    }
+    let i = 0;
+    const iv = setInterval(() => {
+      if (i >= N) { clearInterval(iv); scheduleEnd(); return; }
+      const p = pointOnSnake(i / (N - 1));
+      const w = document.createElement('div');
+      w.className = 'snake-win';
+      w.style.left = p.x + 'px';
+      w.style.top = p.y + 'px';
+      w.innerHTML = `<div class="sw-tbar"><span class="sw-dot-mini"></span><span class="sw-dot-mini"></span><span class="sw-dot-mini"></span></div><div class="sw-msg">${words[i % words.length]}</div>`;
+      stage.appendChild(w);
+      i++;
+    }, spawnMs);
+    function scheduleEnd() {
+      setTimeout(() => {
+        stage.style.opacity = '0';
+        setTimeout(() => { stage.remove(); setSnakeRunning(false); }, fadeMs);
+      }, holdMs);
+    }
   }
 
   return (
@@ -217,7 +644,7 @@ export default function VCGPage() {
             onClick={e => { e.stopPropagation(); setOpenMenu(openMenu === 'file' ? null : 'file'); }}>
             FILE
             <div className="menu-dropdown">
-              <button className="menu-action" type="button">New Window<span className="shortcut">⌘N</span></button>
+              <button className="menu-action" type="button" onClick={() => { setOpenMenu(null); openFinder('about'); }}>New Window<span className="shortcut">⌘N</span></button>
               <button className="menu-action" type="button" onClick={() => scrollTo('paths')}>Apply<span className="shortcut">⌘A</span></button>
               <button className="menu-action" type="button" onClick={() => scrollTo('path-y')}>Send the deck<span className="shortcut">⌘D</span></button>
               <div className="menu-sep" />
@@ -260,7 +687,7 @@ export default function VCGPage() {
             <div className="menu-dropdown">
               <button className="menu-action" type="button" onClick={() => setScannerOpen(true)}>Brand Scanner.exe<span className="shortcut">⌘B</span></button>
               <div className="menu-sep" />
-              <button className="menu-action" type="button">Window Snake<span className="shortcut">⌘S</span></button>
+              <button className="menu-action" type="button" onClick={() => { setOpenMenu(null); runSnake(); }}>Window Snake<span className="shortcut">⌘S</span></button>
             </div>
           </span>
         </div>
@@ -306,7 +733,7 @@ export default function VCGPage() {
           </div></div>
           <div className="di-label">Reload</div>
         </button>
-        <button className="di always sys-mail" type="button" aria-label="VCG.MAIL" onClick={() => setInquireOpen(true)}>
+        <button className="di always sys-mail" type="button" aria-label="VCG.MAIL" onClick={() => openFinder('vcg-mail')}>
           <div className="di-thumb"><div className="di-tbar" /><div className="di-body di-svg">
             <svg viewBox="0 0 32 24" fill="none" stroke="currentColor" strokeWidth="1.6">
               <rect x="2" y="3" width="28" height="18" rx="1"/><path d="M2 4 L16 14 L30 4"/>
@@ -314,7 +741,22 @@ export default function VCGPage() {
           </div></div>
           <div className="di-label">VCG.MAIL</div>
         </button>
-        <button className="di always f-trash" type="button" aria-label="Trash">
+
+        {/* Folders — bottom cluster */}
+        <button className="di always f-tv" type="button" aria-label="Open VCG_TV folder" onClick={() => openFinder('vcg-tv')}>
+          <div className="di-thumb folder"><div className="di-body" /></div>
+          <div className="di-label">VCG_TV</div>
+        </button>
+        <button className="di always f-shoot" type="button" aria-label="Open Founder_Shoot folder" onClick={() => openFinder('founder-shoot')}>
+          <div className="di-thumb folder"><div className="di-body" /></div>
+          <div className="di-label">Founder_Shoot</div>
+        </button>
+        <button className="di always f-press" type="button" aria-label="Open Press folder" onClick={() => openFinder('press')}>
+          <div className="di-thumb folder"><div className="di-body" /></div>
+          <div className="di-label">Press</div>
+        </button>
+
+        <button className="di always f-trash" type="button" aria-label="Trash" onClick={() => openFinder('trash')}>
           <div className="di-thumb"><div className="di-tbar" /><div className="di-body di-svg">
             <svg viewBox="0 0 32 32" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="square">
               <path d="M6 9 L26 9"/><path d="M13 6 L19 6"/><path d="M9 9 L11 26 L21 26 L23 9"/>
@@ -1070,7 +1512,171 @@ export default function VCGPage() {
           </div>
         </div>
       )}
+
+      {/* ===== FINDER WINDOW ===== */}
+      {finderOpen && (
+        <div className="finder-overlay open" role="dialog" aria-modal="true"
+          onClick={e => { if (e.target === e.currentTarget) setFinderOpen(false); }}>
+          <div className="finder-window">
+            <div className="finder-tbar">
+              <div className="finder-dots">
+                <button className="finder-dot" type="button" aria-label="Close" onClick={() => setFinderOpen(false)}>×</button>
+                <button className="finder-dot" type="button" aria-label="Minimize">−</button>
+                <button className="finder-dot" type="button" aria-label="Zoom">↗</button>
+              </div>
+              <div className="finder-ttl">
+                {finderFolder === 'vcg-tv' ? 'VCG_TV'
+                  : finderFolder === 'founder-shoot' ? 'Founder_Shoot'
+                  : finderFolder === 'press' ? 'Press'
+                  : finderFolder === 'vcg-mail' ? 'VCG.MAIL'
+                  : finderFolder === 'trash' ? 'Trash'
+                  : 'About VCG.OS'}
+              </div>
+            </div>
+            <div className="finder-toolbar">
+              <span className="crumb">
+                {finderFolder === 'vcg-tv' ? 'VCG_Desktop ▸ VCG_TV'
+                  : finderFolder === 'founder-shoot' ? 'VCG_Desktop ▸ Founder_Shoot'
+                  : finderFolder === 'press' ? 'VCG_Desktop ▸ Press'
+                  : finderFolder === 'vcg-mail' ? 'VCG_Desktop ▸ VCG.MAIL ▸ Compose'
+                  : finderFolder === 'trash' ? 'VCG_Desktop ▸ Trash'
+                  : 'VCG_Desktop ▸ About'}
+              </span>
+              <span className="view-toggle">
+                <button className="vt-btn active" type="button">Icon</button>
+                <button className="vt-btn" type="button">List</button>
+              </span>
+            </div>
+            <div className="finder-body">
+              {finderFolder === 'vcg-tv' && (
+                <>
+                  <div className="finder-player">VCG_TV — COMING SOON</div>
+                  <div className="finder-grid" style={{ marginTop: '24px' }}>
+                    {['Showreel.mov', 'Brydon_Talks.mov'].map(name => (
+                      <button key={name} className="finder-item" type="button">
+                        <div className="fi-thumb video" />
+                        <div className="fi-name">{name}</div>
+                        <div className="fi-meta">— · placeholder</div>
+                      </button>
+                    ))}
+                  </div>
+                </>
+              )}
+              {finderFolder === 'founder-shoot' && (
+                <div className="finder-grid">
+                  {['IMG_001.jpg','IMG_002.jpg','IMG_003.jpg','IMG_004.jpg','IMG_005.jpg','IMG_006.jpg'].map(name => (
+                    <button key={name} className="finder-item" type="button">
+                      <div className="fi-thumb photo" />
+                      <div className="fi-name">{name}</div>
+                      <div className="fi-meta">— · placeholder</div>
+                    </button>
+                  ))}
+                </div>
+              )}
+              {finderFolder === 'press' && (
+                <div className="finder-grid">
+                  {[
+                    { name: 'Apple_Brand.txt', label: 'A' },
+                    { name: 'Headspace_Story.txt', label: 'H' },
+                    { name: 'Plenty_Profile.txt', label: 'P' },
+                    { name: 'NASA_Note.txt', label: 'N' },
+                    { name: 'Brand_New_World.txt', label: 'B' },
+                  ].map(({ name, label }) => (
+                    <button key={name} className="finder-item" type="button">
+                      <div className="fi-thumb press">{label}</div>
+                      <div className="fi-name">{name}</div>
+                      <div className="fi-meta">— · placeholder</div>
+                    </button>
+                  ))}
+                </div>
+              )}
+              {finderFolder === 'vcg-mail' && <MailApp />}
+              {finderFolder === 'trash' && (
+                <div className="app-trash">
+                  <div className="app-trash-icon">⌫</div>
+                  <div className="app-trash-headline">Empty.</div>
+                  <p className="app-trash-text">Boring ideas don&rsquo;t survive here.</p>
+                </div>
+              )}
+              {(finderFolder === 'about' || !finderFolder) && (
+                <div className="app-os">
+                  <div className="app-os-mark">VCG<span className="app-os-mark-blink">_</span></div>
+                  <div className="app-os-tagline">Belief, as an operating system.</div>
+                  <table className="app-os-table">
+                    <tbody>
+                      <tr><td>System</td><td>VCG.OS</td></tr>
+                      <tr><td>Version</td><td>2026.1 (Brand New World)</td></tr>
+                      <tr><td>Founder</td><td>Brydon Gerus</td></tr>
+                      <tr><td>Studio</td><td>VCG_Atelier · Los Angeles</td></tr>
+                      <tr><td>Cores</td><td>Creative · Capital · Campaign</td></tr>
+                      <tr><td>Memory</td><td>Belief ∞</td></tr>
+                      <tr><td>Display</td><td>Brand New World · 2026</td></tr>
+                    </tbody>
+                  </table>
+                  <p className="app-os-quote">&ldquo;The best companies scale belief.&rdquo;</p>
+                </div>
+              )}
+            </div>
+            <div className="finder-statusbar">
+              <span>
+                {finderFolder === 'vcg-tv' ? '2 items'
+                  : finderFolder === 'founder-shoot' ? '6 items'
+                  : finderFolder === 'press' ? '5 items'
+                  : finderFolder === 'vcg-mail' ? 'studio@vcg.xyz'
+                  : finderFolder === 'trash' ? '0 items'
+                  : 'VCG.OS v2026.1'}
+              </span>
+              <span>VCG_Atelier · 2026</span>
+            </div>
+          </div>
+        </div>
+      )}
     </>
+  );
+}
+
+function MailApp() {
+  const [from, setFrom] = useState('');
+  const [subject, setSubject] = useState('');
+  const [body, setBody] = useState('');
+  const [copied, setCopied] = useState(false);
+
+  function handleLaunch() {
+    const url = 'mailto:studio@vcg.xyz?subject=' + encodeURIComponent(subject || 'Brand New World') +
+      '&body=' + encodeURIComponent((from ? 'From: ' + from + '\n\n' : '') + body);
+    window.location.href = url;
+  }
+
+  function handleCopy() {
+    navigator.clipboard.writeText('studio@vcg.xyz').then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2400);
+    }).catch(() => {});
+  }
+
+  return (
+    <div className="app-mail">
+      <div className="app-mail-row">
+        <label>To:</label>
+        <input type="email" value="studio@vcg.xyz" readOnly />
+      </div>
+      <div className="app-mail-row">
+        <label>From:</label>
+        <input type="email" value={from} onChange={e => setFrom(e.target.value)} placeholder="founder@company.com" autoComplete="email" />
+      </div>
+      <div className="app-mail-row">
+        <label>Subject:</label>
+        <input type="text" value={subject} onChange={e => setSubject(e.target.value)} placeholder="Brand New World" />
+      </div>
+      <textarea value={body} onChange={e => setBody(e.target.value)} placeholder="Tell us about the brand and the work. Brydon reads every note." rows={10} />
+      <div className="app-mail-actions">
+        <button type="button" className="app-btn" onClick={handleLaunch}>Open in Mail</button>
+        <button type="button" className="app-btn primary" onClick={handleCopy}>
+          {copied ? 'Copied!' : 'Copy studio@vcg.xyz'}
+        </button>
+      </div>
+      {copied && <div className="app-mail-status">Copied. studio@vcg.xyz</div>}
+    </div>
   );
 }
 

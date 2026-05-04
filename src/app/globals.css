@@ -595,7 +595,8 @@
   }
 
   /* ========= BELIEF (Section 2) — 3-panel pinned scroll w/ collage build ========= */
-  #belief.bf-mode { min-height: 360vh; padding: 0; overflow: hidden; }
+  /* overflow: visible is required — overflow: hidden on any ancestor breaks position: sticky on .cbody */
+  #belief.bf-mode { min-height: 360vh; padding: 0; overflow: visible !important; }
   #belief.bf-mode > .tbar { position: sticky; top: 0; z-index: 30; background: var(--card-lt); }
   #belief.bf-mode > .cbody {
     position: sticky; top: 56px;
@@ -606,11 +607,13 @@
   }
   .bf-panel {
     position: absolute; inset: 0;
-    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    display: flex; flex-direction: column; align-items: center; justify-content: flex-start;
+    padding-top: clamp(28px, 7vh, 80px);
     text-align: center;
     transform: translate3d(100%, 0, 0);
     will-change: transform;
     background: var(--card-lt);
+    overflow: hidden;
   }
   .bf-panel[data-idx="0"] { transform: translate3d(0, 0, 0); }
   .bf-panel-inner {
@@ -1773,18 +1776,17 @@
   .di.sys-reload { top: 32px;  left: 24px; }
   .di.sys-mail   { top: 144px; left: 24px; }
 
-  /* Folders cluster — bottom-left horizontal row */
-  .di.f-tv     { bottom: 32px; left: 24px; }
-  .di.f-shoot  { bottom: 32px; left: 144px; }
-  .di.f-press  { bottom: 32px; left: 264px; }
+  /* Folders — scattered across the desktop, not all in one row */
+  .di.f-tv     { bottom: 32px;  left: 24px; }     /* bottom-left anchor */
+  .di.f-shoot  { bottom: 144px; left: 24px; }     /* stacks UP the left side */
+  .di.f-press  { bottom: 32px;  left: 50%; transform: translateX(-50%); } /* bottom-centre */
 
   /* Trash anchored to bottom-right corner (Mac convention) */
   .di.f-trash  { bottom: 32px; right: 24px; }
 
   @media (max-width: 1100px) {
-    .di.sys-reload, .di.sys-mail, .di.f-tv { left: 16px; }
-    .di.f-shoot { left: 132px; }
-    .di.f-press { left: 248px; }
+    .di.sys-reload, .di.sys-mail, .di.f-tv, .di.f-shoot { left: 16px; }
+    .di.f-press { left: 50%; transform: translateX(-50%); }
     .di.s-1, .di.s-3, .di.s-5, .di.s-7, .di.s-9, .di.s-11, .di.f-trash { right: 16px; }
     .di.s-2, .di.s-4, .di.s-6, .di.s-8, .di.s-10, .di.s-12 { right: 136px; }
   }
